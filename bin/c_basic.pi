@@ -1,0 +1,417 @@
+% Static planner for colored multi-agent path finding for grid maps and the makespan objective
+% using train motion on agents
+% swap is forbidden
+
+import sat.
+
+main([InsFile]) =>
+    %printf("solving %s\n",InsFile),
+    cl(InsFile),
+    main.
+
+main =>
+    ins(Graph, As, Grps, LB),                   % read input
+    cl_facts(Graph,[$neibs(+,-)]),
+    N = len(Graph),                     % N = number of nodes
+    create_edges(N, E),                 % E = number of edges
+    time(once(path(LB,N,E,to_array(As),Grps,Plan))),
+    output_plan(Plan).
+
+test =>
+    testins(Graph, As, Grps, LB),                   % read input
+    cl_facts(Graph,[$neibs(+,-)]),
+    N = len(Graph),                     % N = number of nodes
+    create_edges(N, E),                 % E = number of edges
+    time(once(path(LB,N,E,to_array(As),Grps,Plan))),
+    output_plan(Plan).
+
+
+%%%%%%%%%%%%%%%%%%%%
+% MAIN COMPUTATION %
+%%%%%%%%%%%%%%%%%%%%
+
+path_for_delta(N,E,As,K,M,Grps,B) =>
+    ME = M - 1,
+    GL = len(Grps),
+
+    printf("trying makespan %w\n",M),
+    B = new_array(M,K,N),
+    C = new_array(ME,K,E),
+
+    %printf("arrays completed!\n"),
+
+    % Initialize the first and last states
+    foreach(A in 1..K)    
+        (V,FV) = As[A],
+        B[1,A,V] = 1,
+        sum([B[M,A,FVS] : FVS in FV]) #= 1,
+        preprocess_forward(A,V,M,N,B),
+        preprocess_backward(A,FV,M,N,B)
+    end,
+    preprocess_edges(K,N,ME,B,C),
+
+    %printf("preprocessing done!\n"),
+
+    %printf("B %w\n",B),
+    %printf("number of free variables\n%w\n",length(vars(B))),
+
+    B :: 0..1,
+    C :: 0..1,
+
+    % Each agent occupies up to one vertex at each time.
+    %foreach (T in 1..M, A in 1..K)
+    %    sum([B[T,A,V] : V in 1..N]) #=< 1
+    %end,
+
+    % No two agents occupy the same vertex at any time.
+    foreach(T in 1..M, V in 1..N) 
+        sum([B[T,A,V] : A in 1..K]) #=< 1   
+    end,
+
+    % if an edge is used in one direction, it can not be used in the other direction (no swap)
+    foreach(T in 1..ME, EID in 1..E) 
+        edgeid(EID, U, V),
+    	edge(OppositeEID, V, U),
+        EList = remove_dups([EID,OppositeEID]),
+    	sum([C[T,A,W] : A in 1..K, W in EList]) #=< 1   
+    end,
+
+    % if an agent is in a node, it needs to leave through one of the edges from that node
+    foreach(T in 1..ME, A in 1..K, V in 1..N) 
+        out_edges(V,EList),
+        B[T,A,V] #= sum([C[T,A,W] : W in EList])
+    end,
+
+    % if an agent is in a node, it needs to enter through one of the edges incoming to that node
+    foreach(T in 2..M, A in 1..K, V in 1..N) 
+        in_edges(V,EList),
+        B[T,A,V] #= sum([C[T-1,A,W] : W in EList])
+    end,
+
+    % if agent is using an edge, it must arrive to the connected node in next timestep
+    %foreach(T in 1..ME, A in 1..K, EID in 1..E) 
+    %    edgeid(EID,_,V),
+    %    C[T,A,EID] #=> B[T+1,A,V] #= 1
+    %end,
+
+    printf("solving start\n"),
+
+    solve(B).
+
+path(LB,N,E,As,Grps,B) =>
+    K = len(As),
+
+    %lower_bound(to_list(As),LB),
+    printf("mks LB %w\n",LB+1),
+    between(LB+1,999999,M),
+
+    path_for_delta(N,E,As,K,M,Grps,B).
+
+
+%%%%%%%%%%%%%%%%%%%%%
+% UTILITY FUNCTIONS %
+%%%%%%%%%%%%%%%%%%%%%
+
+% foreach vertex U, if U is at least distance D away from V,
+% then agent A cannot occupy vertex U at time T, T+1, ..., T+D-1
+preprocess_forward(A,V,Mks,N,B) =>
+    foreach (U in 1..N, V !== U)
+    	foreach (T in 1..Mks)
+    		if not exist_shorter_path((V,U),T-1)then
+    			B[T,A,U] = 0
+    		end
+        end
+    end.
+
+% foreach vertex U, if U is at least distance D away from FV,
+% then agent A cannot occupy vertex U at time MaxT, MaxT-1, ..., MaxT-D+1
+preprocess_backward(A,FV,Mks,N,B) =>
+    foreach (U in 1..N, FV !== U)
+    	foreach (T in Mks..-1..1)
+            TmpPath = 0,
+            foreach (V in FV)
+        		if exist_shorter_path((U,V),Mks-T) then
+                    TmpPath := 1
+                end
+            end,
+            if TmpPath == 0 then
+                B[T,A,U] = 0
+            end
+        end
+    end.
+
+
+% if agent can not be in a vertex, then he could not use any edge connected to it
+preprocess_edges(K,N,M1,B,C) =>
+    % outgoing edges
+	foreach(A in 1..K, T in 1..M1-1, V in 1..N)
+		if B[T,A,V] == 0 then
+            out_edges(V,EList),
+			foreach(EID in EList)
+                C[T,A,EID] = 0
+			end
+		end
+	end,
+
+    % incoming edges - works only for undirected graphs!!!
+	foreach(A in 1..K, T in 2..M1, V in 1..N)
+		if B[T,A,V] == 0 then
+            out_edges(V,EList),
+            foreach(EID in EList)
+                edgeid(EID, V, U),
+                edge(OppositeEID, U, V),
+                C[T-1,A,OppositeEID] = 0
+            end
+        end
+	end.
+
+lower_bound(As,LB) =>
+    lower_bound(As,0,LB).
+
+lower_bound([],LB0,LB) => LB = LB0.
+lower_bound([(V,FV)|As],LB0,LB) =>
+    shortest_path_cost_many((V,FV),Cost),
+	lower_bound(As,max(LB0,Cost),LB).
+
+
+shortest_path_cost_many((_,[]),Cost) => Cost = 999999999.
+
+shortest_path_cost_many((V,[FV|FVS]),Cost) =>
+    shortest_path_cost_many((V,FVS),Cost1),
+    shortest_path_cost((V,FV),Cost2),
+    Cost = min(Cost1,Cost2).
+
+
+% TODO - there should be upper bound
+shortest_path_cost((V,FV),Cost) => 
+    TmpCost = 0,
+    while(not exist_shorter_path((V,FV),TmpCost))
+        TmpCost := TmpCost + 1
+    end,
+    Cost = TmpCost.
+
+
+% is there a path from V to FV that is not longer than Cost?
+table (+,+)
+exist_shorter_path((V,FV),Cost), Cost > 1 ?=>
+	Cost1 = Cost-1,
+	exist_shorter_path((V,FV),Cost1).
+	
+exist_shorter_path((V,V),Cost), Cost >= 0 => true.
+exist_shorter_path((V,FV),Cost), Cost > 0 => 
+    neibs(V,Neibs),
+    member(NextV,Neibs),
+    Cost1 = Cost-1,
+    exist_shorter_path((NextV,FV),Cost1).
+
+
+% create $edge from $neibs
+create_edges(N, E) =>
+	Ed1 = [],
+    Ed2 = [],
+	EID = 1,
+	foreach(V in 1..N)
+		neibs(V,Neibs),
+		L = len(Neibs),
+		foreach(I in 1..L)
+			Ed1 := [$edge(EID, V, Neibs[I])|Ed1],
+            Ed2 := [$edgeid(EID, V, Neibs[I])|Ed2],
+			EID := EID + 1
+		end
+	end,
+
+    cl_facts(Ed1,[$edge(-,+,+)]),
+    cl_facts(Ed2,[$edgeid(+,-,-)]),
+    E = len(Ed1).
+
+
+% for node W, get list of outgoing edges
+out_edges(W,EList) =>
+	ETMP = [],
+    neibs(W,Neibs),
+    L = len(Neibs),
+    foreach(I in 1..L)
+        edge(EID,W,Neibs[I]),
+        ETMP := [EID] ++ ETMP
+	end,
+	EList = ETMP.
+
+% for node W, get list of incoming edges
+in_edges(W,EList) =>
+    ETMP = [],
+    neibs(W,Neibs),
+    L = len(Neibs),
+    foreach(I in 1..L)
+        edge(EID,Neibs[I],W),
+        ETMP := [EID] ++ ETMP
+    end,
+    EList = ETMP.
+
+output_plan(B) =>
+    M = len(B) - 1,
+    K = len(B[1]),
+    N = len(B[1,1]),
+    %printf("agents | timesteps\n"),
+    %printf("%w %w\n",K,M+1),
+    printf("timesteps %w\n",M+1),
+	foreach (A in 1..K)
+		foreach (T in 1..M+1)
+			foreach (V in 1..N)
+				if B[T,A,V] == 1 then
+					printf("%w ",V)
+				end
+			end
+		end,
+        nl
+	end.
+
+% pole F je definovano jako F = new_array(M,E,K) -> M .. makespan, E .. pocet hran, K .. pocet agentu
+output_flow(F) =>
+    M = len(F),
+    E = len(F[1]),
+    K = len(F[1,1]),
+
+    foreach (T in 1..M)
+        foreach (A in 1..K)
+            printf("At timestep %w, commodity %w:\n",T,A),
+            foreach (Ed in 1..E)
+                if F[T,Ed,A] == 1 then
+                    edgeid(Ed,U,V),
+                    printf("%w %w \n",U,V)
+                end
+            end
+        end,
+        nl
+    end.
+
+
+
+%%%%%%%%%%%%%%%
+% TEST INPUTS %
+%%%%%%%%%%%%%%%
+
+testins1(Graph, As, Groups, LB) =>
+    LB = 1,
+    Graph = [
+    $neibs(1,[1,5,2]),
+    $neibs(2,[2,1,3]),
+    $neibs(3,[3,2,4]),
+    $neibs(4,[4,6,3]),
+    $neibs(5,[5,1,7]),
+    $neibs(6,[6,4,8]),
+    $neibs(7,[7,5,9]),
+    $neibs(8,[8,6,12]),
+    $neibs(9,[9,7,13,10]),
+    $neibs(10,[10,14,9,11]),
+    $neibs(11,[11,15,10,12]),
+    $neibs(12,[12,8,11,16]),
+    $neibs(13,[13,9,17,14]),
+    $neibs(14,[14,10,13,15]),
+    $neibs(15,[15,11,14,16]),
+    $neibs(16,[16,12,18,15]),
+    $neibs(17,[17,13,19]),
+    $neibs(18,[18,16,20]),
+    $neibs(19,[19,17,21]),
+    $neibs(20,[20,18,24]),
+    $neibs(21,[21,19,22]),
+    $neibs(22,[22,21,23]),
+    $neibs(23,[23,22,24]),
+    $neibs(24,[24,20,23])
+    ],
+    As = [(1,[8,11,12]),(2,[8,11,12]),(5,[8,11,12]),(20,[13,14,17]),(23,[13,14,17]),(24,[13,14,17])],
+    Groups = [[1,2,3],[4,5,6]].
+
+
+testins2(Graph, As, Groups, LB) =>
+    LB = 1,
+    Graph = [
+    $neibs(1,[1,4,2]),
+    $neibs(2,[2,5,1]),
+    $neibs(3,[3,7]),
+    $neibs(4,[4,1,5,8]),
+    $neibs(5,[5,2,9,4,6]),
+    $neibs(6,[6,5,7]),
+    $neibs(7,[7,6,3,10]),
+    $neibs(8,[8,4,11,9]),
+    $neibs(9,[9,5,8,12]),
+    $neibs(10,[10,7,14]),
+    $neibs(11,[11,8,12]),
+    $neibs(12,[12,9,11,13]),
+    $neibs(13,[13,12,14]),
+    $neibs(14,[14,10,13])
+    ],
+    As = [(1,[3,7,10,14]),(4,[3,7,10,14]),(8,[3,7,10,14]),(11,[3,7,10,14])],
+    Groups = [[1,2,3,4]].
+
+
+testins(Graph, As, Groups, LB) =>
+    LB = 6,
+    Graph = [
+    $neibs(1,[1,9,2]),
+    $neibs(2,[2,10,1,3]),
+    $neibs(3,[3,11,2,4]),
+    $neibs(4,[4,12,3,5]),
+    $neibs(5,[5,13,4,6]),
+    $neibs(6,[6,14,5,7]),
+    $neibs(7,[7,15,6,8]),
+    $neibs(8,[8,16,7]),
+    $neibs(9,[9,1,17,10]),
+    $neibs(10,[10,2,18,9,11]),
+    $neibs(11,[11,3,19,10,12]),
+    $neibs(12,[12,4,20,11,13]),
+    $neibs(13,[13,5,21,12,14]),
+    $neibs(14,[14,6,22,13,15]),
+    $neibs(15,[15,7,23,14,16]),
+    $neibs(16,[16,8,24,15]),
+    $neibs(17,[17,9,25,18]),
+    $neibs(18,[18,10,26,17,19]),
+    $neibs(19,[19,11,27,18,20]),
+    $neibs(20,[20,12,28,19,21]),
+    $neibs(21,[21,13,29,20,22]),
+    $neibs(22,[22,14,30,21,23]),
+    $neibs(23,[23,15,31,22,24]),
+    $neibs(24,[24,16,32,23]),
+    $neibs(25,[25,17,33,26]),
+    $neibs(26,[26,18,34,25,27]),
+    $neibs(27,[27,19,35,26,28]),
+    $neibs(28,[28,20,36,27,29]),
+    $neibs(29,[29,21,37,28,30]),
+    $neibs(30,[30,22,38,29,31]),
+    $neibs(31,[31,23,39,30,32]),
+    $neibs(32,[32,24,40,31]),
+    $neibs(33,[33,25,41,34]),
+    $neibs(34,[34,26,42,33,35]),
+    $neibs(35,[35,27,43,34,36]),
+    $neibs(36,[36,28,44,35,37]),
+    $neibs(37,[37,29,45,36,38]),
+    $neibs(38,[38,30,46,37,39]),
+    $neibs(39,[39,31,47,38,40]),
+    $neibs(40,[40,32,48,39]),
+    $neibs(41,[41,33,49,42]),
+    $neibs(42,[42,34,50,41,43]),
+    $neibs(43,[43,35,51,42,44]),
+    $neibs(44,[44,36,52,43,45]),
+    $neibs(45,[45,37,53,44,46]),
+    $neibs(46,[46,38,54,45,47]),
+    $neibs(47,[47,39,55,46,48]),
+    $neibs(48,[48,40,56,47]),
+    $neibs(49,[49,41,57,50]),
+    $neibs(50,[50,42,58,49,51]),
+    $neibs(51,[51,43,59,50,52]),
+    $neibs(52,[52,44,60,51,53]),
+    $neibs(53,[53,45,61,52,54]),
+    $neibs(54,[54,46,62,53,55]),
+    $neibs(55,[55,47,63,54,56]),
+    $neibs(56,[56,48,64,55]),
+    $neibs(57,[57,49,58]),
+    $neibs(58,[58,50,57,59]),
+    $neibs(59,[59,51,58,60]),
+    $neibs(60,[60,52,59,61]),
+    $neibs(61,[61,53,60,62]),
+    $neibs(62,[62,54,61,63]),
+    $neibs(63,[63,55,62,64]),
+    $neibs(64,[64,56,63])
+    ],
+    As = [(58,[46,38,54,45,47]),(50,[46,38,54,45,47]),(57,[46,38,54,45,47]),(59,[46,38,54,45,47]),(42,[46,38,54,45,47])],
+    Groups = [[1,2,3,4,5]].
+
