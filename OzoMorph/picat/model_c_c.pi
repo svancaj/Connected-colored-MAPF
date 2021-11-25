@@ -1,0 +1,135 @@
+import sat.
+
+%connected colored + no turning
+find_plans(Problem) = Plans =>
+    K = Problem.agents_count(),
+    N = Problem.vertices_count(),
+    E = Problem.create_edges(),
+    LB = Problem.lower_bound(),     %lower_bound(to_list(As),LB),
+
+    between(LB+1,999999,M),
+
+    ME = M - 1,
+
+    printf("trying makespan %w\n",M),
+    B = new_array(M,K,N),
+    F = new_array(M,E,K),
+
+    B :: 0..1,
+    F :: 0..1,
+
+    foreach (Group in Problem.groups)
+        % Initial positions
+        %Initials = Group.initials,
+        foreach (Agent in Group.agents)
+            V = Group.initialPosition(Agent),
+            B[1,Agent,V] = 1
+        end,
+
+        % Target positions - each target position is occupied by an agent
+        foreach (V in Group.targets)
+            sum([B[M,Agent,V] : Agent in Group.agents]) #= 1
+        end
+    end,
+
+    % Each agent occupies up to one vertex at each time.
+    foreach (T in 1..M, A in 1..K)
+        sum([B[T,A,V] : V in 1..N]) #=< 1
+    end,
+
+    % No two agents occupy the same vertex at any time.
+    foreach(T in 1..M, V in 1..N) 
+        sum([B[T,A,V] : A in 1..K]) #=< 1   
+    end,
+
+    % Every transition is valid
+    foreach(T in 1..ME, A in 1..K, V in 1..N) 
+        Neibs = Problem.neighboursIDS(V),
+        B[T,A,V] #=> sum([B[T+1,A,U] : U in Neibs]) #>= 1,
+        foreach(A1 in (A+1)..K, V1 in Neibs, V1!=V)  % no swap constraint
+            B[T,A,V]#=0 #\/ B[T+1,A,V1]#=0 #\/ B[T,A1,V1]#=0 #\/ B[T+1,A1,V]#=0
+        end
+    end,
+
+    % agents need to remain connected
+    % pole F je definovano jako F = new_array(M,E,K) -> M .. makespan, E .. pocet hran, K .. pocet agentu
+    foreach(T in 1..M, G in Problem.groups)
+        % V každé skupině zvolíme jednoho referenčního agenta R - treba hned prvniho
+        R = G.firstAgentNumber(),
+
+        % stokova podminka
+        % Jestliže platí at(v,a,t), potom \sum_{(u,v)\in E} f(c,t,u,v,a) = 1 pro všechna v,c,a!=r \in c,t,
+        foreach(V in 1..N, A in G.agents(), A != R)
+            InE = Problem.in_edges(V),
+            OutE = Problem.out_edges(V),
+            %printf("(%w %w %w) -> sum %w >= 1\n",T,A,V,InE),
+            B[T,A,V] #=> sum([F[T,Ed,A] : Ed in InE]) #>= 1,
+            B[T,A,V] #=> sum([F[T,Ed,A] : Ed in OutE]) #= 0
+        end,
+
+        % podminka pro bezny vrchol
+        % pokud at(v,a,t) neplatí, pak \sum_{(u,v)\in E} f(c,t,u,v,a) = \sum_{(v,u)\in E} f(c,t,u,v,a) pro všechna v,c,a!=r \in c,t,
+        foreach(V in 1..N, A in G.agents(), A != R)
+            InE = Problem.in_edges(V),
+            OutE = Problem.out_edges(V),
+            %#~(B[T,A,V]) #=> (sum([F[T,Ed,A] : Ed in InE]) #= sum([F[T,Ed,A] : Ed in OutE]))
+            foreach (A1 in G.agents(), A1 != A, A1 != R)
+                (B[T,A1,V]) #=> (sum([F[T,Ed,A] : Ed in InE]) #= sum([F[T,Ed,A] : Ed in OutE]))
+            end
+        end,
+
+        % zdrojova podminka
+        % Pokud at(u,r,t), pak \sum_{(u,v)\in E} f(c,t,u,v,a) = 1 pro všechna c,t,u,a!=r \in c
+        foreach(V in 1..N, A in G.agents(), A != R)
+            InE = Problem.in_edges(V),
+            OutE = Problem.out_edges(V),
+            B[T,R,V] #=> sum([F[T,Ed,A] : Ed in OutE]) #= 1,
+            B[T,R,V] #=> sum([F[T,Ed,A] : Ed in InE]) #= 0
+        end,
+
+        % f(c,t,u,v,a)<=at(v,a,t) pro všechna v,c,a\in c,(u,v),t.
+        foreach(V in 1..N, A in G.agents(), A != R)
+            InE = Problem.in_edges(V),
+            foreach(Ed in InE)
+                %F[T,Ed,A] #=< sum([B[T,An,V] : An in G.agents(), An != R, An != A])
+                F[T,Ed,A] #=< sum([B[T,An,V] : An in G.agents()])
+                %F[T,Ed,A] #=> sum([B[T,An,V] : An in G.agents()]) #>= 1
+            end
+        end
+    end,
+
+    solve(B),
+    Plans = output_plan(B,Problem).
+
+
+% Finds plans from values of variables B
+output_plan(B,Problem) = Plans =>
+    Plans = [],
+    foreach (Group in Problem.groups)
+        foreach (Agent in Group.agents)
+            Position = Group.initialPosition(Agent),
+            Plan = [],
+            foreach (T in 2..len(B)) % T==1 are initial positions
+                foreach (V in 1..Problem.vertices_count)
+                    if (B[T,Agent,V] == 1) then
+                        if (V == Position) then
+                            Plan := [wait] ++ Plan
+                        elseif (V == Position + 1) then %to the right
+                            Plan := [goRight] ++ Plan,
+                            Position := V
+                        elseif (V == Position - 1) then %to the left
+                            Plan := [goLeft] ++ Plan,
+                            Position := V
+                        elseif (V >= Position + 1) then %to the bottom
+                            Plan := [goDown] ++ Plan,
+                            Position := V
+                        elseif (V <= Position - 1) then %to the top
+                            Plan := [goUp] ++ Plan,
+                            Position := V
+                        end
+                    end
+                end
+            end,
+            Plans := Plans ++ [reverse(Plan)]
+        end
+    end.

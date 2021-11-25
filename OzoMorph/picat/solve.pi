@@ -1,0 +1,17 @@
+import problem.
+%import model_c.
+%import model_c_c.
+%import model_c_t.
+import model_c_c_t.
+
+%main([ProblemInstanceFile]) =>
+%    load(ProblemInstanceFile),
+main() =>
+    ProblemInstance = getProblemInstance(),
+    Plans = find_plans(ProblemInstance),
+    print(Plans).
+
+
+getProblemInstance() = PI =>
+	PI = $problem(6,[$group(1,[2,7,8],[14,9,4]),$group(4,[13,18,12],[11,16,21])],5,6).
+

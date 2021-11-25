@@ -1,0 +1,162 @@
+% PROBLEM
+% %problem(AgentsCount, [group(FirstAgentNumber,[I1,I2,...],[T1,T2,...]), group(...),...],Width,Height)
+
+vertices_count(Problem) = VC =>
+    $problem(_,_,W,H) = Problem,
+    VC = W*H.
+
+
+agents_count(Problem) = AC =>
+    $problem(AC,_,_,_) = Problem.
+
+groups(Problem) = Gs =>
+    $problem(_,Gs,_,_) = Problem.
+
+
+neighboursDir(Problem,Vertex) = Neighbours =>
+    Neighbours = [],
+    V = vectors(),
+    $problem(_,_,Width,Height) = Problem,
+    X = ((Vertex-1) mod Width) + 1, %+-1 because array indices are 1-based
+    Y = ((Vertex-1) div Width) + 1,
+    foreach (I in 1..len(V))
+        (DX,DY) = V[I],
+        NX = X + DX, 
+        NY = Y + DY,
+        if(between(1, Width, NX) && between(1, Height, NY)) then 
+            CI = I, % local copy
+            N = (NY-1) * Width + (NX-1) +1,
+            Neighbours := [(N,CI) | Neighbours]
+        end
+    end.
+
+neighbour(Problem,Vertex,Direction) = Neighbour =>
+    V = vectors(),
+    $problem(_,_,Width,Height) = Problem,
+    X = ((Vertex-1) mod Width) + 1, %+-1 because array indices are 1-based
+    Y = ((Vertex-1) div Width) + 1,
+    (DX,DY) = V[Direction],
+    NX = X + DX, 
+    NY = Y + DY,
+    if(between(1, Width, NX) && between(1, Height, NY)) then 
+        Neighbour = (NY-1) * Width + (NX-1) +1
+    else
+        Neighbour = 0
+    end.
+
+neighboursIDS(Problem,Vertex) = Neighbours =>
+    V = vectors(),
+    Neighbours = [],
+    $problem(_,_,Width,Height) = Problem,
+    X = ((Vertex-1) mod Width) + 1, %+-1 because array indices are 1-based
+    Y = ((Vertex-1) div Width) + 1,
+    foreach (I in 1..len(V))
+        (DX,DY) = V[I],
+        NX = X + DX, 
+        NY = Y + DY,
+        if(between(1, Width, NX) && between(1, Height, NY)) then 
+            CI = I, % local copy
+            N = (NY-1) * Width + (NX-1) +1,
+            Neighbours := [N | Neighbours]
+        end
+    end.
+
+create_edges(Problem) = E =>
+    Ed1 = [],
+    Ed2 = [],
+    EID = 1,
+    foreach(V in 1..Problem.vertices_count)
+        Neibs = Problem.neighboursIDS(V),
+        L = len(Neibs),
+        foreach(I in 1..L)
+            Ed1 := [$edge(EID, V, Neibs[I])|Ed1],
+            Ed2 := [$edgeid(EID, V, Neibs[I])|Ed2],
+            EID := EID + 1
+        end
+    end,
+
+    cl_facts(Ed1,[$edge(-,+,+)]),
+    cl_facts(Ed2,[$edgeid(+,-,-)]),
+    E = len(Ed1).
+
+in_edges(Problem, V) = InE =>
+    ETMP = [],
+    Neibs = Problem.neighboursIDS(V),
+    L = len(Neibs),
+    foreach(I in 1..L)
+        edge(EID,Neibs[I],V),
+        ETMP := [EID] ++ ETMP
+    end,
+    InE = ETMP.
+
+    
+out_edges(Problem, V) = OutE =>
+    ETMP = [],
+    Neibs = Problem.neighboursIDS(V),
+    L = len(Neibs),
+    foreach(I in 1..L)
+        edge(EID,V,Neibs[I]),
+        ETMP := [EID] ++ ETMP
+    end,
+    OutE = ETMP.
+
+actions(Problem,AgentVertex,AgentDirection,NextVertex,DirectionOfNextVertex) = Actions =>
+    if (AgentVertex != NextVertex) then
+        Turn = (DirectionOfNextVertex - AgentDirection) mod 4,
+        Actions := [goAhead|turnAction(Turn)]
+    else
+        Actions := [wait]
+    end.
+
+actions(Problem,Turn) = Actions =>
+    if(Turn =:= 0) then
+        Actions = [wait]
+    else
+        Actions = turnAction(Turn)
+    end.
+    
+goAhead(Problem) = [goAhead].
+
+turnAction(0) = [].
+turnAction(1) = [turnRight].
+turnAction(2) = [turnRight,turnRight].
+turnAction(3) = [turnLeft]. 
+turnAction(N) = A =>
+    if (N<0) then 
+        A = turnAction(N+4)
+    elseif (N>=4) then
+    A = turnAction(N-4)
+    end.
+
+vectors() = V =>
+    V = {(0,-1),(1,0),(0,1),(-1,0),(0,0)}.
+
+
+firstAgentNumber(Group) = FAN =>
+    $group(FAN,_,_) = Group.
+
+lastAgentNumber(Group) = LAN =>
+    $group(FAN,Initials,_) = Group,
+    LAN = FAN + len(Initials)-1.
+
+agents(Group) = As =>
+    FAN = Group.firstAgentNumber,
+    LAN = Group.lastAgentNumber,
+    As = FAN..LAN.
+
+initialPosition(Group, AgentLinIdx) = I =>
+    Is = Group.initials,
+    AgentGroupIndex = AgentLinIdx - Group.firstAgentNumber + 1,
+    I = Is[AgentGroupIndex].
+
+initials(Group) = Is =>
+    $group(_,Is,_) = Group.
+
+targets(Group) = Ts =>
+    $group(_,_,Ts) = Group.
+
+lower_bound(Problem) = LB =>
+    LB = 1.
+
+lower_bound_turning(Problem) = LB =>
+    LB = 1.
